@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tileserver</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<style>
+  :root { --bg: #fff; --fg: #1d2330; --muted: #667085; --line: #e4e7ec; --accent: #2563eb; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #15181d; --fg: #e8eaed; --muted: #9aa1ac; --line: #2a2f37; --accent: #60a5fa; } }
+  html, body { margin: 0; height: 100%; font: 14px system-ui, sans-serif; background: var(--bg); color: var(--fg); }
+  body { display: flex; }
+  aside { width: 300px; border-right: 1px solid var(--line); overflow: auto; padding: 12px; box-sizing: border-box; }
+  #map { flex: 1; }
+  h1 { font-size: 16px; margin: 0 0 10px; }
+  .src { padding: 8px; border: 1px solid var(--line); border-radius: 8px; margin-bottom: 8px; cursor: pointer; }
+  .src.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .src small { color: var(--muted); display: block; }
+  .src a { color: var(--accent); font-size: 12px; }
+  code { font-size: 12px; word-break: break-all; }
+  @media (max-width: 700px) { body { flex-direction: column; } aside { width: auto; max-height: 40vh; border-right: 0; border-bottom: 1px solid var(--line); } }
+</style>
+</head>
+<body>
+<aside><h1>tileserver</h1><div id="list">Loading…</div><p><code id="url"></code></p></aside>
+<div id="map"></div>
+<script>
+const colors = ["#e6194b", "#3cb44b", "#4363d8", "#f58231", "#911eb4", "#42d4f4"];
+const map = new maplibregl.Map({
+  container: "map",
+  style: { version: 8, glyphs: "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf", sources: {
+    osm: { type: "raster", tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"], tileSize: 256, attribution: "© OpenStreetMap contributors" } },
+    layers: [{ id: "osm", type: "raster", source: "osm", paint: { "raster-opacity": 0.5 } }] },
+  center: [3, 30], zoom: 2,
+});
+map.addControl(new maplibregl.NavigationControl());
+map.showTileBoundaries = new URLSearchParams(location.search).has("debug");
+let current = [];
+
+async function show(src, el) {
+  document.querySelectorAll(".src").forEach((e) => e.classList.remove("active"));
+  el.classList.add("active");
+  current.forEach((id) => map.getLayer(id) && map.removeLayer(id));
+  if (map.getSource("preview")) map.removeSource("preview");
+  current = [];
+  const tj = await (await fetch(src.tilejson)).json();
+  document.getElementById("url").textContent = tj.tiles[0];
+  if (src.vector) {
+    map.addSource("preview", { type: "vector", url: src.tilejson });
+    (tj.vector_layers || []).forEach((l, i) => {
+      const c = colors[i % colors.length], base = { source: "preview", "source-layer": l.id };
+      const add = (id, spec) => { map.addLayer({ id, ...base, ...spec }); current.push(id); };
+      add(`${l.id}-fill`, { type: "fill", filter: ["==", ["geometry-type"], "Polygon"], paint: { "fill-color": c, "fill-opacity": 0.3 } });
+      add(`${l.id}-line`, { type: "line", filter: ["!=", ["geometry-type"], "Point"], paint: { "line-color": c, "line-width": 1.5 } });
+      add(`${l.id}-pt`, { type: "circle", filter: ["==", ["geometry-type"], "Point"], paint: { "circle-color": c, "circle-radius": 5, "circle-stroke-color": "#fff", "circle-stroke-width": 1 } });
+      add(`${l.id}-label`, { type: "symbol", filter: ["==", ["geometry-type"], "Point"], layout: { "text-field": ["coalesce", ["get", "name"], ""], "text-font": ["Open Sans Semibold"], "text-size": 12, "text-offset": [0, 1.2] } });
+    });
+  } else {
+    map.addSource("preview", { type: "raster", url: src.tilejson, tileSize: 256 });
+    map.addLayer({ id: "preview-raster", type: "raster", source: "preview" });
+    current.push("preview-raster");
+  }
+  if (tj.bounds) map.fitBounds([[tj.bounds[0], tj.bounds[1]], [tj.bounds[2], tj.bounds[3]]], { padding: 20, maxZoom: tj.maxzoom });
+}
+
+map.on("load", async () => {
+  const sources = await (await fetch("sources")).json();
+  const list = document.getElementById("list");
+  list.replaceChildren();
+  if (!sources.length) list.textContent = "No .pmtiles or .mbtiles files found.";
+  sources.forEach((s, i) => {
+    const el = document.createElement("div");
+    el.className = "src";
+    el.innerHTML = `<strong></strong><small>${s.kind} · ${s.format} · z${s.minzoom}–${s.maxzoom}</small><a href="${s.tilejson}" target="_blank">TileJSON</a>`;
+    el.querySelector("strong").textContent = s.name || s.id;
+    el.onclick = (e) => { if (e.target.tagName !== "A") show(s, el); };
+    list.append(el);
+    if (i === 0) show(s, el);
+  });
+});
+map.on("click", (e) => {
+  const f = map.queryRenderedFeatures(e.point).filter((f) => f.source === "preview")[0];
+  if (f) new maplibregl.Popup().setLngLat(e.lngLat).setText(JSON.stringify(f.properties)).addTo(map);
+});
+</script>
+</body>
+</html>
